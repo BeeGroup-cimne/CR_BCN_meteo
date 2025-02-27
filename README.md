@@ -1,2 +1,10 @@
 # CR_BCN_meteo
-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
+
+## Authors
+- Anceline
+- Arnau Comas
+- Jose Manuel Broto - jmbroto@cimne.upc.edu
+- Gerard Mor - gmor@cimne.upc.edu
+
+  
+Copyright (c) 2024 Anceline, Arnau Comas, Jose Manuel Broto, Gerard Mor
