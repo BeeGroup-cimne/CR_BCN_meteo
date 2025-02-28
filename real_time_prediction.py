@@ -8,14 +8,14 @@ if __name__ == "__main__":
     # save as csv file with columns: prediction time, time, weather station, temperature, relative humidity
 
     # General parameters
-    lat_range = [40.5, 42.9]
-    lon_range = [0.1, 3.4]
+    lat_range = [41.25, 41.6]
+    lon_range = [1.9, 2.35]
     nd = 1  # number of days to consider BEFORE the prediction time
     n_harm = 4  # Nb of harmonics used for Fourier series, must match with n_harm used for model training
     model_name = 'cat_8yrs_04_8_10_timespace'
     model_extension = '.cbm'
 
-    nextcloud_root_dir = os.path.expanduser('~/NextCloud/Beegroup/data/CR_BCN_modeling/weather_downscaling/')
+    nextcloud_root_dir = os.path.expanduser('~/NextCloud/ClimateReady-BCN/WP3-VulnerabilityMap/Weather Downscaling/Models_and_predictions/')
 
     static_features_zarr_file = f'{nextcloud_root_dir}General_Data/weather_static_features.zarr'
     barcelona_shp_dir = f'{nextcloud_root_dir}General_Data/shapefiles_barcelona_distrito.shp'

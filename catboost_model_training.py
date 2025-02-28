@@ -20,7 +20,7 @@ if __name__ == "__main__":
     depth = 6
     min_weight = 10
     # Directories
-    nextcloud_root_dir = os.path.expanduser('~/NextCloud/Beegroup/data/CR_BCN_modeling/weather_downscaling/')
+    nextcloud_root_dir = os.path.expanduser('~/NextCloud/ClimateReady-BCN/WP3-VulnerabilityMap/Weather Downscaling/Models_and_predictions/')
 
     high_res_zarr_dir = f'{nextcloud_root_dir}General_Data/weather_urbclim_2008-2017.zarr'
     low_res_hist_zarr_dir = f'{nextcloud_root_dir}General_Data/weather_era5land_2008-2017.zarr'
