@@ -5,7 +5,7 @@ weather data from said models (historical_prediction.py & real_time_prediction.p
 They download and upload files stored in the BEE Group's Next Cloud.
 
 ## Authors
-- Anceline
+- Anceline Desertaux - anceline.desertaux@insa-lyon.fr
 - Arnau Comas
 - Jose Manuel Broto - jmbroto@cimne.upc.edu
 - Gerard Mor - gmor@cimne.upc.edu
