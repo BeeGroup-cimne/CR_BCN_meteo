@@ -17,9 +17,13 @@ if __name__ == "__main__":
 
     nextcloud_root_dir = os.path.expanduser('~/NextCloud/ClimateReady-BCN/WP3-VulnerabilityMap/Weather Downscaling/Models_and_predictions/')
 
-    static_features_zarr_file = f'{nextcloud_root_dir}General_Data/weather_static_features.zarr'
-    barcelona_shp_dir = f'{nextcloud_root_dir}General_Data/shapefiles_barcelona_distrito.shp'
-    catalonia_shp_dir = f'{nextcloud_root_dir}General_Data/divisions-administratives-v2r1-catalunya-5000-20240705.shp'
+    # static_features_zarr_file = f'{nextcloud_root_dir}General_Data/weather_static_features.zarr'
+    # barcelona_shp_dir = f'{nextcloud_root_dir}General_Data/shapefiles_barcelona_distrito.shp'
+    # catalonia_shp_dir = f'{nextcloud_root_dir}General_Data/divisions-administratives-v2r1-catalunya-5000-20240705.shp'
+    data_dir = os.path.expanduser('~data/')
+    static_features_zarr_file = f'{data_dir}weather_static_features.zarr'
+    barcelona_shp_dir = f'{data_dir}shapefiles_barcelona_distrito.shp'
+    catalonia_shp_dir = f'{data_dir}divisions-administratives-v2r1-catalunya-5000-20240705.shp'
 
     val_names = ['airTemperature', 'relativeHumidity']  # variable names in the model output
 
@@ -31,12 +35,12 @@ if __name__ == "__main__":
     path_model = f'{nextcloud_root_dir}/Historical_ERA5Land/{model_file}'
     df_final = None
     while ym <= max(ym_range):  # data loaded for range of days chosen by user
-        prediction, time_steps = general_prediction(ym, path_model, f'{nextcloud_root_dir}/Historical_ERA5Land',
+        prediction, time_steps = general_prediction(ym, path_model, f'{data_dir}/era5land',
                                                     barcelona_shp_dir, catalonia_shp_dir, static_features_zarr_file,
                                                     lat_range, lon_range, n_harm, fore=0)
         nspace = 10222
         ntime = int(prediction.shape[0] / nspace)
-        high_res_min, high_res_max, low_res_min, low_res_max, xylatlon = get_min_max_lat_lon(f'{nextcloud_root_dir}/Historical_ERA5Land')
+        high_res_min, high_res_max, low_res_min, low_res_max, xylatlon = get_min_max_lat_lon(f'{data_dir}/era5land')
         df_time = None
         for ival, name in enumerate(val_names):
             mmin = high_res_min[:, ival]
