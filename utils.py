@@ -1,26 +1,37 @@
-
 from catboost import CatBoostRegressor, Pool
 import requests
 import os
 import sys
 import xarray as xr
 from functools import reduce
-import polars as pl
-import numpy as np
 import pvlib
 import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Point
+from shapely.geometry import Point, box
 import datetime
 from math import pi
 from sklearn.model_selection import train_test_split
-from dotenv import load_dotenv
 import zipfile
 import cdsapi
 import cfgrib
 import random
 import warnings
-
+import matplotlib.pyplot as plt
+import numpy as np
+import polars as pl
+from matplotlib.tri import Triangulation
+import rasterio
+from rasterio.mask import mask
+from pyproj import Transformer
+import geopandas as gpd
+from shapely.geometry import box
+from shapely import union_all
+from rasterstats import zonal_stats
+from matplotlib.backends.backend_pdf import PdfPages
+from hypercadaster_ES import mergers
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import plotly.graph_objs as go
+from plotly.offline import plot
 
 def get_gdf_buffed_area(barcelona_shapefile_directory, catalonia_shapefile_directory, distance):
     # Distance in meters /!\
@@ -31,8 +42,21 @@ def get_gdf_buffed_area(barcelona_shapefile_directory, catalonia_shapefile_direc
     if crs_b != gdf_c.crs:
         gdf_c = gdf_c.to_crs(crs_b)
     # Union on multipolygons
-    barcelona_polygon = gdf_b.union_all()
-    catalonia_polygon = gdf_c.union_all()
+    gdf_b = gdf_b.geometry[
+        gdf_b.geometry.notnull() &
+        gdf_b.geometry.is_valid &
+        ~gdf_b.geometry.is_empty &
+        gdf_b.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+        ]
+    gdf_c = gdf_c.geometry[
+        gdf_c.geometry.notnull() &
+        gdf_c.geometry.is_valid &
+        ~gdf_c.geometry.is_empty &
+        gdf_c.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+        ]
+    # Apply union_all safely
+    barcelona_polygon = union_all(gdf_b.geometry)
+    catalonia_polygon = union_all(gdf_c.geometry)
     # Convert polygon to GeoDataFrame (first using GeoSeries)
     barcelona_geoseries = gpd.GeoSeries([barcelona_polygon], crs=crs_b)
     barcelona_gdf = gpd.GeoDataFrame(geometry=barcelona_geoseries)
@@ -72,42 +96,382 @@ def unzip_zarr_file(file_path):
 
 
 def get_dataset(high_res_zarr_dir, low_res_hist_zarr_dir, low_res_fore_zarr_dir, static_features_zarr_file,
-                barcelona_shp_dir, catalonia_shp_dir):
+                barcelona_shp_dir, catalonia_shp_dir, hypercadaster_ES_dir,
+                low_res_bbox_polygon=None, plots=False, k_fore=0, plots_dir="plots"):
     ## Unzipping data if not unzipped
     for file in [high_res_zarr_dir, low_res_hist_zarr_dir, low_res_fore_zarr_dir, static_features_zarr_file]:
-        unzip_zarr_file(file)
+        if file.endswith(".zip"):
+            unzip_zarr_file(file)
 
     ## Open data
     high_res_ds = xr.open_zarr(high_res_zarr_dir, chunks={})
     low_res_hist_ds = xr.open_zarr(low_res_hist_zarr_dir, chunks={})
     low_res_fore_ds = xr.open_zarr(low_res_fore_zarr_dir, chunks={})
-    static_features_ds = xr.open_zarr(static_features_zarr_file, chunks={})
 
     ## Filter out the unnecessary weather stations (out of scope)
-    barcelona_area = get_gdf_buffed_area(barcelona_shp_dir, catalonia_shp_dir, 10000)
-    crs_b = barcelona_area.crs
-    barcelona_buffered_polygon = barcelona_area.union_all()
-    gdf_b = gpd.read_file(barcelona_shp_dir)
-    barcelona_regular_polygon = gdf_b.union_all()
+    if low_res_bbox_polygon is not None:
+        low_res_fore_ds = filter_weather_station(low_res_fore_ds, low_res_bbox_polygon, "EPSG:4326")
+        low_res_hist_ds = filter_weather_station(low_res_hist_ds, low_res_bbox_polygon, "EPSG:4326")
+    else:
+        barcelona_area = get_gdf_buffed_area(barcelona_shp_dir, catalonia_shp_dir, 5000)
+        low_res_bbox_polygon = barcelona_area.values.union_all()
+        low_res_fore_ds = filter_weather_station(low_res_fore_ds, low_res_bbox_polygon, "EPSG:4326")
+        low_res_hist_ds = filter_weather_station(low_res_hist_ds, low_res_bbox_polygon, "EPSG:4326")
+    barcelona_area = gpd.read_file(barcelona_shp_dir)
+    barcelona_regular_polygon = barcelona_area.union_all()
+    high_res_ds = filter_weather_station(high_res_ds, barcelona_regular_polygon, "EPSG:4326")
 
-    high_res_ds = filter_weather_station(high_res_ds, barcelona_regular_polygon, crs_b)
-    low_res_fore_ds = filter_weather_station(low_res_fore_ds, barcelona_buffered_polygon, crs_b)
-    low_res_hist_ds = filter_weather_station(low_res_hist_ds, barcelona_buffered_polygon, crs_b)
+    weather_station_hr_ids = high_res_ds.weatherStation.values.tolist()
+    weather_coords_hr = [tuple(map(float, ws.split('_'))) for ws in weather_station_hr_ids]  # (lat, lon)
+    weather_points_hr = [Point(lon, lat) for lat, lon in weather_coords_hr]
+    if os.path.exists(static_features_zarr_file):
+        static_features_ds = xr.open_zarr(static_features_zarr_file, chunks={})
+    else:
+        static_features_df = compute_static_features_maps(
+            barcelona_geom = barcelona_regular_polygon,
+            centroids=weather_points_hr,
+            hypercadaster_ES_dir=hypercadaster_ES_dir,
+            buffer=100,
+            shape="square",
+            utm_crs="EPSG:25831"
+        )
+        static_features_ds = static_features_df.drop(
+            columns=["building_area_urbanization_and_landscaping_works_undeveloped_land_percentile","geometry"],
+            errors='ignore').to_xarray()
+        static_features_ds.to_zarr(static_features_zarr_file, mode="w")
+    if plots:
+        # Plot static features
+        plot_static_features_maps(
+            static_features_ds,
+            markersize=2,
+            output_pdf=f"{plots_dir}/static_features_map.pdf"
+        )
+        plot_weather_stations_and_bbox(
+            low_res_hist_ds if k_fore==0 else low_res_fore_ds,
+            high_res_ds,
+            barcelona_area,
+            low_res_bbox_polygon,
+            output_pdf=f"{plots_dir}/weather_map.pdf"
+        )
 
     return high_res_ds, low_res_fore_ds, low_res_hist_ds, static_features_ds
+
+def plot_weather_stations_and_bbox(
+    low_res_hist_ds,
+    high_res_ds,
+    barcelona_area,
+    low_res_bbox_polygon,
+    output_pdf
+):
+    """
+    Plot Barcelona area, bounding box, and weather stations (low- and high-resolution),
+    saving the result to a PDF.
+
+    Parameters:
+        low_res_hist_ds: xarray Dataset containing low-resolution weather station info.
+        high_res_ds: xarray Dataset containing high-resolution weather station info.
+        barcelona_area: GeoDataFrame of the Barcelona boundary.
+        low_res_bbox_polygon: Shapely Polygon representing the bounding box.
+        output_pdf: Path to the output PDF file.
+    """
+
+    # Step 1: Parse low-res weather station coordinates
+    weather_station_ids = low_res_hist_ds.weatherStation.values.tolist()
+    weather_coords = [tuple(map(float, ws.split('_'))) for ws in weather_station_ids]  # (lat, lon)
+    weather_points = [Point(lon, lat) for lat, lon in weather_coords]
+    weather_gdf = gpd.GeoDataFrame(geometry=weather_points, crs="EPSG:4326")
+
+    # Step 2: Reproject low-res weather stations to match CRS
+    if barcelona_area.crs != weather_gdf.crs:
+        weather_gdf = weather_gdf.to_crs(barcelona_area.crs)
+
+    # Step 3: Parse high-res weather station coordinates
+    weather_station_hr_ids = high_res_ds.weatherStation.values.tolist()
+    weather_coords_hr = [tuple(map(float, ws.split('_'))) for ws in weather_station_hr_ids]
+    weather_points_hr = [Point(lon, lat) for lat, lon in weather_coords_hr]
+    weather_gdf_hr = gpd.GeoDataFrame(geometry=weather_points_hr, crs="EPSG:4326")
+
+    # Step 4: Reproject high-res weather stations to match CRS
+    if barcelona_area.crs != weather_gdf_hr.crs:
+        weather_gdf_hr = weather_gdf_hr.to_crs(barcelona_area.crs)
+
+    # Step 5: Convert bbox polygon to GeoDataFrame
+    low_res_gdf = gpd.GeoDataFrame(geometry=[low_res_bbox_polygon], crs=barcelona_area.crs)
+
+    # Step 6: Plot and save to PDF
+    with PdfPages(output_pdf) as pdf:
+        fig, ax = plt.subplots(figsize=(20, 20))
+
+        barcelona_area.plot(ax=ax, color='white', edgecolor='black', label='Barcelona Area')
+        low_res_gdf.plot(ax=ax, facecolor='none', edgecolor='red', linewidth=2, label='Low-Res BBox')
+        weather_gdf_hr.plot(ax=ax, color='lightblue', marker='o', alpha=0.6, markersize=2, label='Weather Stations HR')
+        weather_gdf.plot(ax=ax, color='green', marker='o', markersize=80, label='Weather Stations LR')
+
+        ax.legend(fontsize=20)
+        ax.set_title("Barcelona Area, Bounding Box, and Weather Stations", fontsize=26)
+        ax.tick_params(labelsize=20)
+
+        pdf.savefig(fig)
+        plt.close(fig)
+
+def compute_static_features_maps(barcelona_geom, centroids, hypercadaster_ES_dir, buffer=100, shape="square", utm_crs="EPSG:25831"):
+    """
+    Create a GeoDataFrame of polygons (square or circular) centered on Point geometries.
+
+    Parameters:
+        centroids (list of shapely.geometry.Point): List of points (lon, lat).
+        buffer (float): Buffer distance (in meters).
+        shape (str): 'square' or 'circle' buffer shape.
+        utm_crs (str): Projected CRS to use for buffering (e.g., EPSG:25831 for Barcelona).
+
+    Returns:
+        GeoDataFrame with buffered polygons and index column.
+    """
+    # Create GeoDataFrame of points in WGS84
+    gdf_points = gpd.GeoDataFrame(geometry=centroids, crs="EPSG:4326")
+
+    # Add lat/lon columns (from Point geometries)
+    gdf_points["lat"] = gdf_points.geometry.y.round(6)
+    gdf_points["lon"] = gdf_points.geometry.x.round(6)
+    gdf_points["index"] = gdf_points["lat"].astype(str) + "_" + gdf_points["lon"].astype(str)
+
+    # Reproject to UTM for accurate buffering
+    gdf_points = gdf_points.to_crs(utm_crs)
+
+    # Create buffered polygons
+    if shape == "circle":
+        gdf = gdf_points.copy()
+        gdf["geometry"] = gdf.geometry.buffer(buffer)
+    elif shape == "square":
+        half = buffer / 2
+        gdf = gdf_points.copy()
+        gdf["geometry"] = gdf.geometry.apply(
+            lambda p: box(p.x - half, p.y - half, p.x + half, p.y + half)
+        )
+    else:
+        raise ValueError("shape must be either 'square' or 'circle'")
+
+    gdf.drop(columns=["lat", "lon"], inplace=True)
+
+    # Read the Digital Elevation Model
+    gdf["centroid"] = gdf.centroid
+    gdf.set_geometry("centroid", inplace=True)
+    gdf = mergers.join_DEM_raster(gdf, f"{hypercadaster_ES_dir}/DEM_rasters")
+    gdf["elevation"] = compute_percentile_ranks(gdf[["elevation"]])["elevation_percentile"]
+
+    # Read the cadaster info
+    gdf.set_geometry("geometry", inplace=True)
+    gdf_cadaster = pd.read_pickle(f"{hypercadaster_ES_dir}/08900_only_addresses.pkl", compression="gzip")
+    gdf_cadaster = gdf_cadaster.drop_duplicates(subset=["building_reference"])
+    gdf_cadaster.set_geometry("building_centroid", inplace=True)
+    gdf_cadaster = gdf_cadaster.to_crs(gdf.crs)
+    joined = gpd.sjoin(gdf_cadaster, gdf[['geometry']], how='left', predicate='within')
+    agg_dict = {
+        'building_area_commercial': 'sum',
+        'building_area_residential': 'sum',
+        'building_area_warehouse_parking': 'sum',
+        'building_area_offices': 'sum',
+        'building_area_singular_building': 'sum',
+        'building_area_cultural': 'sum',
+        'building_area_entertainment_venues': 'sum',
+        'building_area_industrial': 'sum',
+        'building_area_urbanization_and_landscaping_works_undeveloped_land': 'sum',
+        'building_area_leisure_and_hospitality': 'sum',
+        'building_area_sports_facilities': 'sum',
+        'building_area_religious': 'sum',
+        'building_area_healthcare_and_charity': 'sum',
+        'n_dwellings': 'sum',
+        'n_floors_above_ground': 'mean'
+    }
+    aggregated = joined.groupby('index_right').agg(agg_dict)
+    aggregated = aggregated.reindex(gdf.index).fillna(0)
+    aggregated.fillna(0.0, inplace=True)
+    aggregated = compute_percentile_ranks(aggregated)
+    aggregated = aggregated[[col for col in aggregated.columns if col.endswith('_percentile')]]
+    gdf = gdf.join(aggregated, how='left')
+
+    # Read the NDVI
+    raster_NDVI = read_ndvi_from_gpkg_scaled(
+        f"{hypercadaster_ES_dir}/NDVI/NDVI.gpkg",
+        transform_bbox(barcelona_geom.bounds, "EPSG:4326", "EPSG:25831"))
+    #plot_ndvi(raster_NDVI[0], title="NDVI Escalado", save_path="ndvi.png")
+    gdf = extract_ndvi_stats_from_array(gdf, raster_NDVI, 0)
+
+    gdf.set_index("index", inplace=True)
+    gdf.drop(columns=["geometry", "centroid"], inplace=True)
+    gdf = normalize_0_1(gdf)
+
+    return gdf
+
+def normalize_0_1(df):
+    """
+    Normalizes all numeric columns in a DataFrame to the [0, 1] range using min-max scaling.
+
+    Parameters:
+        df (pd.DataFrame): Input DataFrame.
+
+    Returns:
+        pd.DataFrame: Copy of the DataFrame with normalized numeric columns.
+    """
+    df_norm = df.copy()
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+
+    for col in numeric_cols:
+        min_val = df[col].min()
+        max_val = df[col].max()
+        if min_val == max_val:
+            # Avoid division by zero; assign 0 if constant column
+            df_norm[col] = 0.0
+        else:
+            df_norm[col] = (df[col] - min_val) / (max_val - min_val)
+
+    return df_norm
+
+def compute_percentile_ranks(df):
+    """
+    Computes ECDF-style percentile ranks for all numeric columns in a DataFrame.
+
+    Parameters:
+        df (pd.DataFrame): Input DataFrame (or GeoDataFrame).
+
+    Returns:
+        pd.DataFrame: Copy with new columns named <original_column>_percentile (values in [0, 1]).
+    """
+    percentile_df = df.copy()
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+
+    for col in numeric_cols:
+        values = df[col].values
+        n = len(values)
+
+        if n <= 1 or np.all(values == values[0]):
+            # Constant or single value column
+            percentile_df[col + "_percentile"] = 0.0
+        else:
+            # Compute ECDF-style percentile rank: proportion of values less than or equal to each
+            # using strict "<" to ensure values are in [0, 1)
+            ranks = np.sum(values[:, None] >= values[None, :], axis=1) / (n - 1)
+            percentile_df[col + "_percentile"] = ranks
+
+    return percentile_df
+
+def extract_ndvi_stats_from_array(gdf, raster_NDVI, nodata_val=-1.0):
+    """
+    Compute min, max, and mean NDVI from a masked array over polygons in a GeoDataFrame.
+
+    Parameters:
+    - gdf (GeoDataFrame): A GeoDataFrame with polygon geometries.
+    - raster_NDVI (tuple): A tuple of (masked_array, affine_transform).
+    - nodata_val (float): Value in the array that represents nodata (default: -1.0).
+
+    Returns:
+    - GeoDataFrame: Same as input `gdf` with ndvi_min, ndvi_max, and ndvi_mean columns added.
+    """
+    data, transform = raster_NDVI
+
+    # Replace nodata value with np.nan
+    array = np.where(data == nodata_val, np.nan, data)
+
+    # Compute zonal statistics
+    stats = zonal_stats(
+        vectors=gdf,
+        raster=array,
+        affine=transform,
+        stats=["min", "max", "mean"],
+        nodata=np.nan
+    )
+
+    # Add stats to the GeoDataFrame
+    gdf = gdf.copy()
+    gdf["ndvi_min"] = [s["min"] for s in stats]
+    gdf["ndvi_max"] = [s["max"] for s in stats]
+    gdf["ndvi_mean"] = [s["mean"] for s in stats]
+
+    return gdf
+
+def plot_ndvi(ndvi_array, title="NDVI", cmap="RdYlGn", save_path=None):
+    ndvi_plot = np.asarray(ndvi_array)
+    if ndvi_plot.ndim > 2:
+        ndvi_plot = ndvi_plot.squeeze()
+
+    plt.figure(figsize=(10, 8))
+    img = plt.imshow(ndvi_plot, cmap=cmap, vmin=-1, vmax=1)
+    plt.colorbar(img, label="NDVI value")
+    plt.title(title)
+    plt.axis('off')
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot guardado en {save_path}")
+
+    plt.show()
+
+def transform_bbox(bbox, src_crs, dst_crs):
+    """
+    Transform bounding box coordinates from src_crs to dst_crs.
+
+    Parameters:
+    - bbox: tuple (xmin, ymin, xmax, ymax)
+    - src_crs: source CRS as EPSG code string, e.g., "EPSG:4326"
+    - dst_crs: destination CRS as EPSG code string, e.g., "EPSG:25831"
+
+    Returns:
+    - transformed_bbox: tuple (xmin, ymin, xmax, ymax) in destination CRS
+    """
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+
+    xmin, ymin = transformer.transform(bbox[0], bbox[1])
+    xmax, ymax = transformer.transform(bbox[2], bbox[3])
+
+    # Make sure the bounds are ordered correctly after transformation
+    xmin_new, xmax_new = sorted([xmin, xmax])
+    ymin_new, ymax_new = sorted([ymin, ymax])
+
+    return (xmin_new, ymin_new, xmax_new, ymax_new)
+
+def read_ndvi_from_gpkg_scaled(gpkg_path, bbox):
+    """
+    Lee un raster NDVI de un archivo GPKG, recorta por un bounding box,
+    y escala los valores de [0,200] a [-1,1].
+    """
+    bbox_polygon = box(*bbox)
+    geojson_geom = [bbox_polygon.__geo_interface__]
+
+    with rasterio.open(gpkg_path) as src:
+        out_image, out_transform = mask(src, geojson_geom, crop=True)
+        ndvi_raw = out_image[0]  # suponer que es una sola banda
+
+        # Enmascarar valores NoData
+        ndvi_masked = np.ma.masked_equal(ndvi_raw, src.nodata)
+
+        # Escalar de [0, 200] a [-1, 1]
+        ndvi_scaled = (ndvi_masked / 200.0) * 2 - 1
+
+        # Enmascarar valores fuera del rango [-1, 1] si es necesario
+        ndvi_scaled = np.ma.masked_outside(ndvi_scaled, -1, 1)
+
+    return ndvi_scaled, out_transform
 
 
 def minmax_normalization(ds):
     max_vars = {}
     min_vars = {}
+    ds = ds.chunk({"time": -1})
     for var in ds.data_vars:
         if var != 'x' and var != 'y':
             print(f'Normalizing {var}')
-            max = ds[var].max(dim="time")
-            min = ds[var].min(dim="time")
-            max_vars[var] = max
-            min_vars[var] = min
-            ds[var] = (ds[var] - min) / (max - min)  # On part du principe que max et min sont différents
+            # Compute 5th and 95th quantiles along the "time" dimension
+            q_min = ds[var].quantile(0.05, dim="time")
+            q_max = ds[var].quantile(0.95, dim="time")
+
+            # Store the min/max for inverse transformation if needed
+            min_vars[var] = q_min
+            max_vars[var] = q_max
+            min_vars[var] = min_vars[var].drop_vars('quantile')
+            max_vars[var] = max_vars[var].drop_vars('quantile')
+            ds[var] = (ds[var] - q_min) / (q_max - q_min)  # On part du principe que max et min sont différents
+            ds[var] = ds[var].drop_vars('quantile')
+    ds = ds.drop_vars('quantile')
     return ds, min_vars, max_vars
 
 
@@ -133,6 +497,54 @@ def format_input_ds(input_ds, static_features_ds):
     input_ds = input_ds.unify_chunks()
     return input_ds
 
+
+def plot_static_features_maps(dataset, crs="EPSG:4326", cmap="viridis", markersize=100, output_pdf="static_feature_maps.pdf"):
+    """
+    Plots color-coded maps for each variable in a static features xarray.Dataset and saves them in a single PDF.
+
+    Parameters:
+        dataset (xarray.Dataset or pd.DataFrame): Dataset with index in 'lat_lon' format.
+        crs (str): Coordinate Reference System (default: EPSG:4326).
+        cmap (str): Colormap for plotting (default: 'viridis').
+        markersize (int): Marker size for plot points.
+        output_pdf (str): Output PDF file name (default: 'static_feature_maps.pdf').
+    """
+    # Convert xarray.Dataset to pandas.DataFrame if needed
+    if isinstance(dataset, xr.Dataset):
+        df = dataset.to_dataframe()
+    elif isinstance(dataset, pd.DataFrame):
+        df = dataset.copy()
+    else:
+        raise TypeError("Input must be an xarray.Dataset or pandas.DataFrame")
+
+    # Ensure index is string-formatted like 'lat_lon'
+    try:
+        df['lat'] = df.index.map(lambda x: float(str(x).split('_')[0]))
+        df['lon'] = df.index.map(lambda x: float(str(x).split('_')[1]))
+    except Exception as e:
+        raise ValueError("Index format must be 'lat_lon', e.g., '41.38_2.17'") from e
+
+    # Build GeoDataFrame
+    geometry = [Point(lon, lat) for lat, lon in zip(df['lat'], df['lon'])]
+    gdf = gpd.GeoDataFrame(df.drop(columns=['lat', 'lon']), geometry=geometry, crs=crs)
+
+    # Save all plots to a single PDF
+    with PdfPages(output_pdf) as pdf:
+        for column in gdf.columns.difference(['geometry']):
+            fig, ax = plt.subplots(figsize=(8, 6))
+            gdf.plot(
+                ax=ax,
+                column=column,
+                cmap=cmap,
+                legend=True,
+                markersize=markersize
+            )
+            ax.set_title(f"{column.replace('_', ' ').title()}", fontsize=14)
+            ax.set_axis_off()
+            pdf.savefig(fig)  # Save the current figure into the PDF
+            plt.close(fig)
+
+    print(f"All plots saved to '{output_pdf}'")
 
 def transformation_general(high_res_ds, low_res_ds, static_features_ds, time_indices, fore):
     # Dropping redundant variables in inputs
@@ -628,15 +1040,15 @@ def ERA5Land_historical(ym, data_dir, lat_range, lon_range):
                 ]
             }
         client.retrieve(dataset, request).download(filename)
-    print(f"Data for {month:02}/{year} has been downloaded successfully!")
+    print(f"\nData for {month:02}/{year} has been downloaded successfully!")
     return filename
 
 
 def get_min_max_lat_lon(model_folder):
-    high_res_min = np.load(f'{model_folder}/highmin.npy', allow_pickle=True)
-    high_res_max = np.load(f'{model_folder}/highmax.npy', allow_pickle=True)
-    low_res_min = np.load(f'{model_folder}/lowmin.npy', allow_pickle=True)
-    low_res_max = np.load(f'{model_folder}/lowmax.npy', allow_pickle=True)
+    high_res_min = np.load(f'{model_folder}/high_min.npy', allow_pickle=True)
+    high_res_max = np.load(f'{model_folder}/high_max.npy', allow_pickle=True)
+    low_res_min = np.load(f'{model_folder}/low_min.npy', allow_pickle=True)
+    low_res_max = np.load(f'{model_folder}/low_max.npy', allow_pickle=True)
     xylatlon = np.load(f'{model_folder}/xylatlon.npy', allow_pickle=True)
     return high_res_min, high_res_max, low_res_min, low_res_max, xylatlon
 
@@ -692,7 +1104,8 @@ def format_data(file_dir, low_res_min, low_res_max, static_features_zarr_file, b
     # normalize input data from previously saved min and max of the model input data
     input_realtime_ds = minmax_norm_realtime(input_realtime_ds, low_res_min, low_res_max)
 
-    unzip_zarr_file(static_features_zarr_file)
+    if static_features_zarr_file.endswith(".zip"):
+        unzip_zarr_file(static_features_zarr_file)
     static_features_ds = xr.open_zarr(static_features_zarr_file, chunks={})
 
     input_realtime_ds = format_input_ds(input_realtime_ds, static_features_ds)
@@ -707,7 +1120,7 @@ def add_loc_time(df, nh):
     df['month'] = df['time'].dt.month
     df[['latitude', 'longitude']] = df['weatherStation'].str.split('_', n=1, expand=True)
     df['latitude'] = df.latitude.astype(float)
-    df['longitude'] = df.latitude.astype(float)
+    df['longitude'] = df.longitude.astype(float)
 
     def fs(df, nhar, var, period):
         for h in [i + 1 for i in range(nhar)]:
@@ -738,7 +1151,7 @@ def general_prediction(pred_time, path_model, data_dir, barcelona_shp_dir, catal
         file_dir, low_res_min, low_res_max, static_features_zarr_file, barcelona_shp_dir, catalonia_shp_dir, fore
     )
 
-    os.remove(file_dir)  # Remove nc file or grib file with raw data
+    #os.remove(file_dir)  # Remove nc file or grib file with raw data
 
     time_steps = input_realtime_ds.coords["time"].values
     X_realtime = input_realtime_ds.to_dataframe()
@@ -757,3 +1170,274 @@ def general_prediction(pred_time, path_model, data_dir, barcelona_shp_dir, catal
 
     return preds, time_steps
 
+
+def parse_station_coords(station_ids):
+    """Extract latitude and longitude from station ID strings like '41.2_2.1'"""
+    lats, lons = zip(*[map(float, s.split('_')) for s in station_ids])
+    return np.array(lats), np.array(lons)
+
+def plot_datasets_on_map(low_res_ds, high_res_ds, variable, time_to_plot,
+                         barcelona_shp_dir,
+                         low_marker_size=80, high_marker_size=30, cmap='viridis',
+                         save_path=None):
+    """
+    Plot low- and high-resolution datasets on a map at a given time, and overlay Barcelona shapefile.
+
+    Parameters:
+    - barcelona_shp_dir: directory containing the Barcelona shapefile (.shp and others)
+    """
+    # Select nearest data at the given time
+    low_res = low_res_ds.sel(time=time_to_plot, method='nearest')
+    high_res = high_res_ds.sel(time=time_to_plot, method='nearest')
+
+    # Extract coordinates from weatherStation index
+    lat_low, lon_low = parse_station_coords(low_res['weatherStation'].values)
+    lat_high, lon_high = parse_station_coords(high_res['weatherStation'].values)
+
+    # Get variable values
+    val_low = low_res[variable].values
+    val_high = high_res[variable].values
+
+    # Load Barcelona shapefile
+    barcelona_gdf = gpd.read_file(barcelona_shp_dir)
+
+    # Plotting
+    fig = plt.figure(figsize=(10, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.set_title(f"{variable} at {np.datetime_as_string(low_res['time'].values, unit='h')}", fontsize=14)
+
+    # Base map
+    ax.add_feature(cfeature.COASTLINE)
+    ax.add_feature(cfeature.BORDERS, linestyle=':')
+    ax.add_feature(cfeature.LAND, facecolor='lightgray')
+    ax.add_feature(cfeature.OCEAN, facecolor='lightblue')
+    ax.gridlines(draw_labels=True)
+
+    # Overlay Barcelona shapefile
+    barcelona_gdf = barcelona_gdf.to_crs(epsg=4326)  # Ensure it's in lat/lon
+    for geometry in barcelona_gdf.geometry:
+        ax.add_geometries([geometry], crs=ccrs.PlateCarree(),
+                          facecolor='none', edgecolor='red', linewidth=1.5)
+
+    # High-res points
+    sc_high = ax.scatter(lon_high, lat_high, c=val_high, cmap=cmap, s=high_marker_size,
+                         edgecolor='k', linewidth=0.2, transform=ccrs.PlateCarree(), label='High-res')
+
+    # Low-res points
+    sc_low = ax.scatter(lon_low, lat_low, c=val_low, cmap=cmap, s=low_marker_size,
+                        edgecolor='black', linewidth=0.5, transform=ccrs.PlateCarree(), marker='o', label='Low-res')
+
+    # Colorbar
+    cbar = plt.colorbar(sc_low, ax=ax, orientation='vertical', shrink=0.7, pad=0.02)
+    cbar.set_label(variable)
+
+    # Legend
+    plt.legend(loc='lower left')
+
+    # Save or show
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+    else:
+        plt.show()
+
+    plt.close(fig)
+
+def plot_air_temperature_raster(df: pl.DataFrame, time_str: str, max_area: float, pdf_path: str):
+    """
+    Plot and save a raster (2D heatmap) of air temperature for a specific timestamp.
+
+    Parameters:
+    - df (pl.DataFrame): Polars DataFrame with 'time', 'latitude', 'longitude', 'airTemperature'
+    - time_str (str): Timestamp in 'YYYY-MM-DD HH:MM:SS' format
+    - max_area (float): Maximum allowed area per triangle in the triangulation
+    - pdf_path (str): Path to save the output PDF (e.g., 'output/plot.pdf')
+    """
+    # Filter data for the specified time
+    df_time = df.filter(
+        pl.col("time") == pl.lit(time_str).str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S")
+    )
+
+    if df_time.is_empty():
+        print(f"No data found for time: {time_str}")
+        return
+
+    # Ensure lat/lon are floats
+    df_time = df_time.with_columns([
+        pl.col("latitude").cast(pl.Float64),
+        pl.col("longitude").cast(pl.Float64)
+    ])
+
+    pdf = df_time.select(["latitude", "longitude", "airTemperature"]).to_pandas()
+
+    lat = pdf["latitude"].values
+    lon = pdf["longitude"].values
+    temp = pdf["airTemperature"].values
+
+    triang = Triangulation(lon, lat)
+
+    # Compute triangle areas
+    x = lon[triang.triangles]
+    y = lat[triang.triangles]
+    area = 0.5 * np.abs(
+        x[:, 0] * (y[:, 1] - y[:, 2]) +
+        x[:, 1] * (y[:, 2] - y[:, 0]) +
+        x[:, 2] * (y[:, 0] - y[:, 1])
+    )
+
+    # Mask large triangles
+    mask = area > max_area
+    triang.set_mask(mask)
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+    tpc = ax.tripcolor(triang, temp, shading='flat', cmap='coolwarm')
+    plt.colorbar(tpc, label="Air Temperature (°C)")
+    ax.set_title(f"Air Temperature (triangles ≤ {max_area} area)\nat {time_str}")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_aspect("equal", adjustable="box")
+    plt.tight_layout()
+
+    # Save to PDF
+    if '/' in pdf_path:
+        os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+    plt.savefig(pdf_path, format='pdf')
+    plt.close(fig)
+    print(f"Saved plot to: {pdf_path}")
+
+def plot_time_series_bundle(
+        df: pl.DataFrame,
+        variables: list[str],
+        output_file: str = "weather_timeseries.html",
+        limits: dict[str, dict] = None,
+        group_by_column: str | None = None,
+        title_column: str | None = None,
+        title: str = "",
+        y_limits_axis: tuple[float, float] | None = None
+):
+    if "time" not in df.columns or not variables:
+        raise ValueError("The DataFrame must contain a 'time' column and at least one variable to plot.")
+
+    limits = limits or {}
+    group_by_column = group_by_column or ""
+    title_column = title_column or ""
+
+    html_chunks = []
+
+    if group_by_column:
+        group_values = df.select(group_by_column).unique().to_series().to_list()
+        for group_value in group_values:
+            df_group = df.filter(pl.col(group_by_column) == group_value)
+            title_str = f"{title} - {group_value}" if title else str(group_value)
+            html_chunks.append(
+                plot_single_time_series(
+                    df_group, variables, title_str, limits, title_column, y_limits_axis, as_html=True
+                )
+            )
+    else:
+        html_chunks.append(
+            plot_single_time_series(df, variables, title, limits, title_column, y_limits_axis, as_html=True)
+        )
+
+    # Combine all HTML chunks into one HTML file
+    full_html = """
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    </head>
+    <body>
+    """
+    full_html += "\n<hr style='margin:30px 0;'>\n".join(html_chunks)
+    full_html += "\n</body></html>"
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(full_html)
+
+    print(f"✅ All plots saved in: {output_file}")
+
+
+def plot_single_time_series(
+        df: pl.DataFrame,
+        variables: list[str],
+        title: str,
+        limits: dict[str, dict],
+        title_column: str | None,
+        y_limits_axis: tuple[float, float] | None,
+        as_html: bool = False
+):
+    df_pd = df.select(["time"] + variables + ([title_column] if title_column else [])).to_pandas()
+    fig = go.Figure()
+    primary_var = variables[0]
+
+    # Primary variable
+    fig.add_trace(go.Scatter(
+        x=df_pd["time"],
+        y=df_pd[primary_var],
+        mode="lines",
+        name=primary_var,
+        line=dict(color="blue")
+    ))
+
+    if primary_var in limits:
+        limit = limits[primary_var]
+        cond = df_pd[primary_var] > limit["value"] if limit["condition"] == "above" else df_pd[primary_var] < limit["value"]
+        fig.add_trace(go.Scatter(
+            x=df_pd["time"][cond],
+            y=df_pd[primary_var][cond],
+            mode="markers",
+            name=f"{primary_var} {limit['condition']} {limit['value']}",
+            marker=dict(color="red", size=6, symbol="circle"),
+            showlegend=True
+        ))
+
+    # Additional variables
+    colors = ["green", "orange", "purple", "brown", "black"]
+    for i, var in enumerate(variables[1:], start=1):
+        color = colors[(i - 1) % len(colors)]
+        fig.add_trace(go.Scatter(
+            x=df_pd["time"],
+            y=df_pd[var],
+            mode="lines",
+            name=var,
+            yaxis="y",
+            line=dict(color=color)
+        ))
+
+        if var in limits:
+            limit = limits[var]
+            cond = df_pd[var] > limit["value"] if limit["condition"] == "above" else df_pd[var] < limit["value"]
+            fig.add_trace(go.Scatter(
+                x=df_pd["time"][cond],
+                y=df_pd[var][cond],
+                mode="markers",
+                name=f"{var} {limit['condition']} {limit['value']}",
+                yaxis="y",
+                marker=dict(color="red", size=6, symbol="x"),
+                showlegend=True
+            ))
+
+    yaxis_config = dict(
+        title=primary_var,
+        titlefont=dict(color="blue"),
+        tickfont=dict(color="blue")
+    )
+
+    if y_limits_axis:
+        yaxis_config["range"] = list(y_limits_axis)
+
+    fig.update_layout(
+        title=title or "Time Series Plot",
+        xaxis_title="Time",
+        yaxis=yaxis_config,
+        legend=dict(x=0.01, y=0.99),
+        margin=dict(l=60, r=60, t=60, b=40),
+        height=500,
+        template="plotly_white"
+    )
+
+    if as_html:
+        return plot(fig, include_plotlyjs=False, output_type='div')
+    else:
+        return fig
