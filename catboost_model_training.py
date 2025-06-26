@@ -12,18 +12,25 @@ if __name__ == "__main__":
     # Parameters
     lat_range = [41.2, 41.6] # [Garraf, Cardedeu]
     lon_range = [1.9, 2.4]
-    k_fore = 1  # Boolean set to 1 when training MeteoGalicia (forecasting) model, and 0 for ERA5Land (historical) model
-    model_name = 'cat_fore_8yrs_04_6_10_timespace_new' # choose recognizable name (with hyperparameters used for example)
-    model_extension = '.cbm'
+    k_fore = 0 # Boolean set to 1 when training MeteoGalicia (forecasting) model, and 0 for ERA5Land (historical) model
     N_hours = int(3 * 8760)  # Number of hours (scenarios) kept
-    n_steps = 8 * 8  # number of chunks, increase if sigkill signal. In general for ERA5Land 20*8, MeteoGalicia 8*8
-    n_harmonics = 3  # number of harmonics when using Fourier series to represent time input
+    n_steps = 25 * 8  # number of chunks, increase if sigkill signal. In general for ERA5Land 20*8, MeteoGalicia 8*8
+    n_harmonics = 4  # number of harmonics when using Fourier series to represent time input
     # Model hyperparameters
     iterations = 400
     learn_rate = 0.03
     depth = 6
     min_weight = 4
-    # Directories
+    model_name = (f'cat_{k_fore}_{",".join([str(i) for i in lat_range])}_{",".join([str(i) for i in lon_range])}_'
+                  f'{N_hours}_{n_steps}_{n_harmonics}_{iterations}_{learn_rate}_{depth}_{min_weight}')
+    model_extension = '.cbm'
+    # Directoriesrow_sums = all_proportion_dfs[variable].sum(axis=1).values[:, None]  # shape (n, 1)
+    # all_proportion_dfs[variable] = (all_proportion_dfs[variable].values * 100) / row_sums
+    # all_proportion_dfs[variable] = pd.DataFrame(
+    #     all_proportion_dfs[variable],
+    #     index=all_proportion_dfs[variable].index,
+    #     columns=all_proportion_dfs[variable].columns
+    # )
     nextcloud_root_dir = os.path.expanduser('~/Nextcloud2/Beegroup/data/CR_BCN_meteo')
     os.makedirs(f'{nextcloud_root_dir}/General_Data', exist_ok=True)
     os.makedirs(f'{nextcloud_root_dir}/Forecasting_MeteoGalicia', exist_ok=True)
@@ -163,7 +170,7 @@ if __name__ == "__main__":
         high_res_df_i, low_res_df_i = [ds.to_dataframe() for ds in [high_res_ds_i, low_res_ds_i]]
         del high_res_ds_i, low_res_ds_i
         low_res_df_i = add_loc_time(low_res_df_i, nh=n_harmonics)
-        # Nspacehigh = int(high_res_df_i.shape[0] / n_hours)
+        #Nspacehigh = int(high_res_df_i.shape[0] / n_hours)
         Nspacehigh = 10222
         X_train, X_test, Y_train, Y_test, train_times, test_times = data_split(low_res_df_i, high_res_df_i,
                                                                                test_ratio=0.1, nspace=Nspacehigh)

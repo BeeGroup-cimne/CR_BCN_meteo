@@ -85,12 +85,16 @@ result = (
     .agg([
         pl.col("time"),
         pl.col("day_temp_max").rolling_min(window_size=3, min_periods=1).alias("rolling_min_day_temp_max"),
+        pl.col("night_temp_min"),
         pl.col("day_temp_max"),
         pl.col("day_temp_mean")
     ])
-    .explode(["time", "rolling_min_day_temp_max", "day_temp_max", "day_temp_mean"])  # to flatten the nested structure
+    .explode(["time", "rolling_min_day_temp_max", "night_temp_min", "day_temp_max", "day_temp_mean"])  # to flatten the nested structure
     .with_columns([
         (pl.col("rolling_min_day_temp_max") > threshold).alias("heatWave"),
+        (pl.col("night_temp_min") > 20).alias("tropicalNight"),
+        (pl.col("night_temp_min") > 25).alias("torridNight"),
+        (pl.col("night_temp_min") > 30).alias("infernalNight"),
         (pl.col("day_temp_max") < 27).alias("safeMaxTemperature"),
         ((pl.col("day_temp_max") >= 27) & (pl.col("day_temp_max") < 33)).alias("cautionMaxTemperature"),
         ((pl.col("day_temp_max") >= 33) & (pl.col("day_temp_max") < 41)).alias("extremeCautionMaxTemperature"),
@@ -115,6 +119,9 @@ result_by_year = (
     .group_by(["weatherStation", "year"])
     .agg([
         pl.col("heatWave").sum(),
+        pl.col("tropicalNight").sum(),
+        pl.col("torridNight").sum(),
+        pl.col("infernalNight").sum(),
         pl.col("safeMaxTemperature").sum(),
         pl.col("cautionMaxTemperature").sum(),
         pl.col("extremeCautionMaxTemperature").sum(),

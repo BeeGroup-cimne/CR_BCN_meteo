@@ -959,7 +959,12 @@ def MeteoGalicia_real_time(pred_time, data_dir, lat_range, lon_range):
     east = max(lon_range)
     west = min(lon_range)
 
-    rest_url = f"https://mandeo.meteogalicia.es/thredds/ncss/modelos/WRF_HIST/d02/{year}/{month:02}/wrf_arw_det_history_d02_{year}{month:02}{day:02}_0000.nc4?var=lat&var=lon&var=prec&var=rh&var=swflx&var=temp&var=u&var=v&north={north}&west={west}&east={east}&south={south}&disableProjSubset=on&horizStride=1&time_start={year}-{month:02}-{day:02}T01%3A00%3A00Z&time_end={next_year}-{next_month:02}-{next_day:02}T00%3A00%3A00Z&timeStride=1&accept=netcdf"
+    rest_url = (f"https://mandeo.meteogalicia.es/thredds/ncss/modelos/WRF_HIST/d02/{year}/{month:02}/wrf_arw_det_history_"
+                f"d02_{year}{month:02}{day:02}_0000.nc4?var=lat&var=lon&var=prec&var=rh&var=swflx&var=temp&var=u&var=v&"
+                f"north={north}&west={west}&east={east}&south={south}&disableProjSubset=on&horizStride=1&"
+                f"time_start={year}-{month:02}-{day:02}T01%3A00%3A00Z&"
+                f"time_end={next_year}-{next_month:02}-{next_day:02}T00%3A00%3A00Z&timeStride=1&"
+                f"accept=netcdf")
     nc_name = f"{year}{month:02}{day:02}_meteogalicia_realtime_96_hours.nc"  # name of download nc file
     nc_file = f"{data_dir}/raw_nc_files/{nc_name}"
     os.makedirs(f"{data_dir}/raw_nc_files", exist_ok=True)
@@ -1053,7 +1058,8 @@ def get_min_max_lat_lon(model_folder):
     return high_res_min, high_res_max, low_res_min, low_res_max, xylatlon
 
 
-def format_data(file_dir, low_res_min, low_res_max, static_features_zarr_file, barcelona_shp_dir, catalonia_shp_dir, fore):
+def format_data(file_dir, low_res_min, low_res_max, static_features_zarr_file, barcelona_shp_dir, catalonia_shp_dir,
+                fore, low_res_bbox_polygon=None):
     if fore:
         dataset = xr.open_dataset(file_dir)
         df_ = [
@@ -1085,10 +1091,13 @@ def format_data(file_dir, low_res_min, low_res_max, static_features_zarr_file, b
     dataset = xr.Dataset.from_dataframe(df_p.set_index(['time', 'weatherStation']))
 
     # Filter out the unnecessary weather stations (out of scope)
-    barcelona_area = get_gdf_buffed_area(barcelona_shp_dir, catalonia_shp_dir, 10000)
-    crs_b = barcelona_area.crs
-    barcelona_buffered_polygon = barcelona_area.union_all()
-    input_realtime_ds = filter_weather_station(dataset, barcelona_buffered_polygon, crs_b)
+    ## Filter out the unnecessary weather stations (out of scope)
+    if low_res_bbox_polygon is not None:
+        input_realtime_ds = filter_weather_station(dataset, low_res_bbox_polygon, "EPSG:4326")
+    else:
+        barcelona_area = get_gdf_buffed_area(barcelona_shp_dir, catalonia_shp_dir, 5000)
+        low_res_bbox_polygon = barcelona_area.values.union_all()
+        input_realtime_ds = filter_weather_station(dataset, low_res_bbox_polygon, "EPSG:4326")
 
     if fore:
         dropped_vars = ["windSpeedEast", "windSpeedNorth"]
@@ -1137,7 +1146,7 @@ def add_loc_time(df, nh):
 
 
 def general_prediction(pred_time, path_model, data_dir, barcelona_shp_dir, catalonia_shp_dir,
-                       static_features_zarr_file, lat_range, lon_range, n_harm, fore):
+                       static_features_zarr_file, lat_range, lon_range, n_harm, fore, low_res_bbox_polygon):
     # Download realtime data from MeteoGalicia
     if fore:
         file_dir = MeteoGalicia_real_time(pred_time, data_dir, lat_range, lon_range)
@@ -1148,7 +1157,8 @@ def general_prediction(pred_time, path_model, data_dir, barcelona_shp_dir, catal
 
     # Format data
     input_realtime_ds = format_data(
-        file_dir, low_res_min, low_res_max, static_features_zarr_file, barcelona_shp_dir, catalonia_shp_dir, fore
+        file_dir, low_res_min, low_res_max, static_features_zarr_file, barcelona_shp_dir, catalonia_shp_dir, fore,
+        low_res_bbox_polygon
     )
 
     #os.remove(file_dir)  # Remove nc file or grib file with raw data
@@ -1294,6 +1304,69 @@ def plot_air_temperature_raster(df: pl.DataFrame, time_str: str, max_area: float
     tpc = ax.tripcolor(triang, temp, shading='flat', cmap='coolwarm')
     plt.colorbar(tpc, label="Air Temperature (°C)")
     ax.set_title(f"Air Temperature (triangles ≤ {max_area} area)\nat {time_str}")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_aspect("equal", adjustable="box")
+    plt.tight_layout()
+
+    # Save to PDF
+    if '/' in pdf_path:
+        os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+    plt.savefig(pdf_path, format='pdf')
+    plt.close(fig)
+    print(f"Saved plot to: {pdf_path}")
+
+def plot_humidity_raster(df: pl.DataFrame, time_str: str, max_area: float, pdf_path: str):
+    """
+    Plot and save a raster (2D heatmap) of relative humidity for a specific timestamp.
+
+    Parameters:
+    - df (pl.DataFrame): Polars DataFrame with 'time', 'latitude', 'longitude', 'relativeHumidity'
+    - time_str (str): Timestamp in 'YYYY-MM-DD HH:MM:SS' format
+    - max_area (float): Maximum allowed area per triangle in the triangulation
+    - pdf_path (str): Path to save the output PDF (e.g., 'output/plot.pdf')
+    """
+    # Filter data for the specified time
+    df_time = df.filter(
+        pl.col("time") == pl.lit(time_str).str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S")
+    )
+
+    if df_time.is_empty():
+        print(f"No data found for time: {time_str}")
+        return
+
+    # Ensure lat/lon are floats
+    df_time = df_time.with_columns([
+        pl.col("latitude").cast(pl.Float64),
+        pl.col("longitude").cast(pl.Float64)
+    ])
+
+    pdf = df_time.select(["latitude", "longitude", "relativeHumidity"]).to_pandas()
+
+    lat = pdf["latitude"].values
+    lon = pdf["longitude"].values
+    rh = pdf["relativeHumidity"].values * 100
+
+    triang = Triangulation(lon, lat)
+
+    # Compute triangle areas
+    x = lon[triang.triangles]
+    y = lat[triang.triangles]
+    area = 0.5 * np.abs(
+        x[:, 0] * (y[:, 1] - y[:, 2]) +
+        x[:, 1] * (y[:, 2] - y[:, 0]) +
+        x[:, 2] * (y[:, 0] - y[:, 1])
+    )
+
+    # Mask large triangles
+    mask = area > max_area
+    triang.set_mask(mask)
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+    tpc = ax.tripcolor(triang, rh, shading='flat', cmap='coolwarm')
+    plt.colorbar(tpc, label="Relative humidity (%)")
+    ax.set_title(f"Relative humidity (triangles ≤ {max_area} area)\nat {time_str}")
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     ax.set_aspect("equal", adjustable="box")

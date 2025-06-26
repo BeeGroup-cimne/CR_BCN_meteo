@@ -1,5 +1,6 @@
 import os
 from utils import *
+from shapely.geometry import Polygon
 
 if __name__ == "__main__":
     # download weather data from era5land website
@@ -9,12 +10,20 @@ if __name__ == "__main__":
     # save as csv file with columns: prediction time, time, weather station, temperature, relative humidity
 
     # General parameters
-    lat_range = [41.2, 41.6] # [Garraf, Cardedeu]
-    lon_range = [1.9, 2.4]
-    ym_range = [201901, 202504]  # range that is going to be predicted formatted like YYYYMMDD
-    n_harm = 4  # Nb of harmonics used for Fourier series, must match with n_harm used for model training
-    model_name = 'cat_hist_8yrs_04_6_10_timespace_new' #'cat_hist_8yrs_04_6_10_timespace'
+    ym_range = [201901, 202505]  # range that is going to be predicted formatted like YYYYMMDD
+    model_name = "cat_0_41.2,41.6_1.9,2.4_26280_200_4_400_0.03_6_4"
     model_extension = '.cbm'
+    lat_range = [float(model_name.split("_")[2].split(",")[0]), float(model_name.split("_")[2].split(",")[1])]
+    lon_range = [float(model_name.split("_")[3].split(",")[0]), float(model_name.split("_")[3].split(",")[1])]
+    k_fore = int(model_name.split("_")[1])
+    N_hours = int(model_name.split("_")[4])
+    n_steps = int(model_name.split("_")[5])
+    n_harmonics = int(model_name.split("_")[6])
+    iterations = int(model_name.split("_")[7])
+    learn_rate = float(model_name.split("_")[8])
+    depth = int(model_name.split("_")[9])
+    min_weight = int(model_name.split("_")[10])
+
     model_file = model_name + model_extension
     nextcloud_root_dir = os.path.expanduser('~/Nextcloud2/Beegroup/data/CR_BCN_meteo')
     static_features_zarr_file = f'{nextcloud_root_dir}/General_Data/weather_static_features.zarr'
@@ -32,9 +41,17 @@ if __name__ == "__main__":
         final_file_name = f'prediction_{ym}'
         file_path = f'{nextcloud_root_dir}/Historical_ERA5Land/Predictions/{final_file_name}.parquet'
         if not os.path.exists(file_path):
-            prediction, time_steps = general_prediction(ym, path_model, f'{nextcloud_root_dir}/Historical_ERA5Land',
-                                                        barcelona_shp_dir, catalonia_shp_dir, static_features_zarr_file,
-                                                        lat_range, lon_range, n_harm, fore=0)
+            prediction, time_steps = general_prediction(
+                ym, path_model, f'{nextcloud_root_dir}/Historical_ERA5Land',
+                barcelona_shp_dir, catalonia_shp_dir, static_features_zarr_file,
+                lat_range, lon_range, n_harmonics, fore=k_fore,
+                low_res_bbox_polygon = Polygon([
+                    (lon_range[0], lat_range[0]),  # bottom-left
+                    (lon_range[1], lat_range[0]),  # bottom-right
+                    (lon_range[1], lat_range[1]),  # top-right
+                    (lon_range[0], lat_range[1]),  # top-left
+                    (lon_range[0], lat_range[0])   # back to bottom-left to close the polygon
+                ]))
             nspace = 10222
             ntime = int(prediction.shape[0] / nspace)
             high_res_min, high_res_max, low_res_min, low_res_max, xylatlon = get_min_max_lat_lon(f'{nextcloud_root_dir}/Historical_ERA5Land')

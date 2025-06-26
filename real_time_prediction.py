@@ -1,4 +1,5 @@
 from utils import *
+from shapely.geometry import Polygon
 
 if __name__ == "__main__":
     # download weather data from meteogalicia website
@@ -8,31 +9,52 @@ if __name__ == "__main__":
     # save as csv file with columns: prediction time, time, weather station, temperature, relative humidity
 
     # General parameters
-    lat_range = [41.25, 41.6]
-    lon_range = [1.9, 2.35]
-    nd = 1  # number of days to consider BEFORE the prediction time
-    n_harm = 4  # Nb of harmonics used for Fourier series, must match with n_harm used for model training
-    model_name = 'cat_8yrs_04_8_10_timespace'
+    model_name = "cat_1_41.2,41.6_1.9,2.4_26280_64_3_400_0.03_6_4"
     model_extension = '.cbm'
+    nd = 3  # number of days to consider BEFORE the prediction time (0 will get from today to the next 4 days)
+    lat_range = [float(model_name.split("_")[2].split(",")[0]), float(model_name.split("_")[2].split(",")[1])]
+    lon_range = [float(model_name.split("_")[3].split(",")[0]), float(model_name.split("_")[3].split(",")[1])]
+    k_fore = int(model_name.split("_")[1])
+    N_hours = int(model_name.split("_")[4])
+    n_steps = int(model_name.split("_")[5])
+    n_harmonics = int(model_name.split("_")[6])
+    iterations = int(model_name.split("_")[7])
+    learn_rate = float(model_name.split("_")[8])
+    depth = int(model_name.split("_")[9])
+    min_weight = int(model_name.split("_")[10])
 
-    nextcloud_root_dir = os.path.expanduser('~/NextCloud/ClimateReady-BCN/WP3-VulnerabilityMap/Weather Downscaling/Models_and_predictions/')
-
-    static_features_zarr_file = f'{nextcloud_root_dir}General_Data/weather_static_features.zarr'
-    barcelona_shp_dir = f'{nextcloud_root_dir}General_Data/shapefiles_barcelona_distrito.shp'
-    catalonia_shp_dir = f'{nextcloud_root_dir}General_Data/divisions-administratives-v2r1-catalunya-5000-20240705.shp'
+    nextcloud_root_dir = os.path.expanduser('~/Nextcloud2/Beegroup/data/CR_BCN_meteo')
+    os.makedirs(f'{nextcloud_root_dir}/General_Data', exist_ok=True)
+    os.makedirs(f'{nextcloud_root_dir}/Forecasting_MeteoGalicia', exist_ok=True)
+    os.makedirs(f'{nextcloud_root_dir}/Historical_ERA5Land', exist_ok=True)
+    plots_dir = f"{nextcloud_root_dir}/Plots_training"
+    os.makedirs(plots_dir, exist_ok=True)
+    high_res_zarr_dir = f'{nextcloud_root_dir}/General_Data/weather_urbclim_new_2008-2017.zarr'
+    low_res_hist_zarr_dir = f'{nextcloud_root_dir}/General_Data/weather_era5land_200801-201712.zarr'
+    low_res_fore_zarr_dir = f'{nextcloud_root_dir}/General_Data/weather_meteogalicia_200801-201712.zarr'
+    static_features_zarr_file = f'{nextcloud_root_dir}/General_Data/weather_static_features.zarr'
+    barcelona_shp_dir = f'{nextcloud_root_dir}/General_Data/shapefiles_barcelona_distrito.shp'
+    catalonia_shp_dir = f'{nextcloud_root_dir}/General_Data/divisions-administratives-v2r1-catalunya-5000-20240705.shp'
+    model_file = model_name + model_extension
 
     val_names = ['airTemperature', 'relativeHumidity']  # variable names in the model output
 
-    #
     pred_time = datetime.datetime.now()
     final_file_name = f'prediction_{pred_time.year}-{pred_time.month:02}-{pred_time.day:02}'
-    model_file = model_name + model_extension
     path_model = f'{nextcloud_root_dir}/Forecasting_MeteoGalicia/{model_file}'
     df_final = None
-    for i in range(nd):  # data loaded for nd days before prediction time
-        prediction, time_steps = general_prediction(pred_time, path_model, f'{nextcloud_root_dir}/Forecasting_MeteoGalicia',
-                                                    barcelona_shp_dir, catalonia_shp_dir, static_features_zarr_file,
-                                                    lat_range, lon_range, n_harm, fore=1)
+    for i in range(nd+1):  # data loaded for nd days before prediction time
+        prediction, time_steps = general_prediction(
+            pred_time, path_model, f'{nextcloud_root_dir}/Forecasting_MeteoGalicia',
+            barcelona_shp_dir, catalonia_shp_dir, static_features_zarr_file,
+            lat_range, lon_range, n_harmonics, fore=k_fore,
+            low_res_bbox_polygon = Polygon([
+                (lon_range[0], lat_range[0]),  # bottom-left
+                (lon_range[1], lat_range[0]),  # bottom-right
+                (lon_range[1], lat_range[1]),  # top-right
+                (lon_range[0], lat_range[1]),  # top-left
+                (lon_range[0], lat_range[0])   # back to bottom-left to close the polygon
+            ]))
         nspace = 10222
         ntime = int(prediction.shape[0] / nspace)
         high_res_min, high_res_max, low_res_min, low_res_max, xylatlon = get_min_max_lat_lon(f'{nextcloud_root_dir}/Forecasting_MeteoGalicia')
@@ -73,6 +95,7 @@ if __name__ == "__main__":
         else:
             df_final = df_time
         pred_time = pred_time - datetime.timedelta(days=1)
+
     # save as parquet file the final dataframe
     df_final.write_parquet(f'{nextcloud_root_dir}/Forecasting_MeteoGalicia/Predictions/{final_file_name}.parquet')
     print(f'Predictions successfully saved to NextCloud in parquet file')
