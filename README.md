@@ -223,11 +223,17 @@ UrbClim data is not publicly available but was kindly shared by the authors for 
 
 ## 📜 License
 
-© 2024 Anceline Desertaux, Jose Manuel Broto, Gerard Mor  
-This project is shared for research and academic purposes. For dataset access or further usage, please contact the authors.
+This project is licensed under the **European Union Public License (EUPL), Version 1.2**.  
+You may obtain a copy of the license at:
+
+[https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12](https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
+
+Unless required by applicable law or agreed to in writing, software distributed under this license is distributed **on an "AS IS" basis**, without warranties or conditions of any kind.
+
+© 2024 Anceline Desertaux, Jose Manuel Broto, Gerard Mor
 
 ---
 
 
 Thank you for using **CR_BCN_meteo**!  
-For any questions or suggestions, feel free to reach out to the authors listed above.
+For any questions or suggestions, feel free to reach gmor@cimne.upc.edu
