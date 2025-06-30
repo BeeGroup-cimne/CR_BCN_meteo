@@ -1,5 +1,3 @@
-import os
-
 from utils import *
 from sklearn.metrics import root_mean_squared_error
 from sklearn.utils import shuffle
@@ -79,7 +77,8 @@ if __name__ == "__main__":
         low_marker_size=80,
         high_marker_size=2,
         time_to_plot=time_to_plot,
-        save_path=f"{plots_dir}/temperature_map_{time_to_plot}.png"
+        save_path=f"{plots_dir}/temperature_map_{time_to_plot}_{k_fore}.png",
+        prefix_title="ERA5Land and UrbClim " if k_fore==0 else "MeteoGalicia and UrbClim "
     )
 
     # # Testing weather summarises by year and an approximate location

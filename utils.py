@@ -1,6 +1,7 @@
 from catboost import CatBoostRegressor, Pool
 import requests
 import os
+import re
 import sys
 import xarray as xr
 from functools import reduce
@@ -1186,10 +1187,16 @@ def parse_station_coords(station_ids):
     lats, lons = zip(*[map(float, s.split('_')) for s in station_ids])
     return np.array(lats), np.array(lons)
 
+
+def camel_to_spaces(name):
+    # Convert CamelCase or camelCase to snake_case
+    s1 = re.sub(r'(.)([A-Z][a-z]+)', r'\1 \2', name)  # Handle lowerUpper
+    return re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', s1).lower()
+
 def plot_datasets_on_map(low_res_ds, high_res_ds, variable, time_to_plot,
                          barcelona_shp_dir,
                          low_marker_size=80, high_marker_size=30, cmap='viridis',
-                         save_path=None):
+                         save_path=None, prefix_title=""):
     """
     Plot low- and high-resolution datasets on a map at a given time, and overlay Barcelona shapefile.
 
@@ -1212,9 +1219,9 @@ def plot_datasets_on_map(low_res_ds, high_res_ds, variable, time_to_plot,
     barcelona_gdf = gpd.read_file(barcelona_shp_dir)
 
     # Plotting
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(12, 8))
     ax = plt.axes(projection=ccrs.PlateCarree())
-    ax.set_title(f"{variable} at {np.datetime_as_string(low_res['time'].values, unit='h')}", fontsize=14)
+    ax.set_title(f"{prefix_title}{camel_to_spaces(variable)} at {np.datetime_as_string(low_res['time'].values, unit='h')}", fontsize=12)
 
     # Base map
     ax.add_feature(cfeature.COASTLINE)
@@ -1238,8 +1245,8 @@ def plot_datasets_on_map(low_res_ds, high_res_ds, variable, time_to_plot,
                         edgecolor='black', linewidth=0.5, transform=ccrs.PlateCarree(), marker='o', label='Low-res')
 
     # Colorbar
-    cbar = plt.colorbar(sc_low, ax=ax, orientation='vertical', shrink=0.7, pad=0.02)
-    cbar.set_label(variable)
+    cbar = plt.colorbar(sc_low, ax=ax, orientation='vertical', shrink=0.7, pad=0.1)
+    cbar.set_label(camel_to_spaces(variable))
 
     # Legend
     plt.legend(loc='lower left')

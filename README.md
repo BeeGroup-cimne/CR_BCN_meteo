@@ -1,133 +1,233 @@
 # CR_BCN_meteo
-You will find in this repo python scripts that train weather downscaling 
-models (catboost_model_training.py) and can predict high-precision 
-weather data from said models (historical_prediction.py & real_time_prediction.py).
-They download and upload files stored in the BEE Group's Next Cloud.
 
-## Authors
-- Anceline Desertaux - anceline.desertaux@insa-lyon.fr
-- Arnau Comas
-- Jose Manuel Broto - jmbroto@cimne.upc.edu
-- Gerard Mor - gmor@cimne.upc.edu
+Welcome to the **CR_BCN_meteo** repository.
 
-## catboost_model_training.py
-Script training a weather downscaling model, either for 
-MeteoGalicia data (forecasting model) or for ERA5-Land data 
-(historical model).
+This repository contains Python scripts for training and applying weather downscaling models. The models leverage the CatBoost library to provide high-resolution weather data, either from historical sources (ERA5-Land) or forecasting services (MeteoGalicia).
 
-### Parameters
-The parameters that can be changed are listed at the beginning 
-of the script, they are:
-- k_fore: Boolean set to 1 for MeteoGalicia model, and 0 for ERA5Land model
-- model_name and model_extension : generally .cbm extension, choose a logical 
-and recognizable name
-- N_hours: Nb of hours kept from the datasets, usually set to 8 * 8760
-- n_steps: Nb of training chunks, generally set to 20 * 8 for ERA5Land 
-and 8 * 8 for MeteoGalicia
-- n_harmonics: Nb of harmonics in the Fourier series for addition of 
-the hour and month to the input dataset. Generally set to 4
-- Model hyperparameters (iterations, learn_rate, depth, min_weight):
-to choose according to the model that is to be created
-- Directories: nextcloud_root_dir (local directory to next cloud's 
-weather downscaling folder) and other file names that are found in 
-Next Cloud (their names don't have to be changed unless they change 
-in Next Cloud)
+The data required for model training and prediction is stored in the NextCloud repository managed by our department at CIMNE.
 
-### Next Cloud directories
-An important point should be made on the different Next Cloud directories 
-considered here. The root folder should correspond to:
-'ClimateReady-BCN/WP3-VulnerabilityMap/Weather Downscaling/Models_and_predictions'.
-Adjust the script so that it corresponds to your path to this Next Cloud 
-folder. After that, within this root folder, there are 3 folders:
-- Forecasting_MeteoGalicia: containing the saved items after training 
-a MeteoGalicia model, and a 'Predictions' folder containing predictions 
-made with a MeteoGalicia model
-- Historical_ERA5Land: containing the saved items after training 
-an ERA5Land model, and a 'Predictions' folder containing predictions 
-made with a ERA5Land model
-- General_Data: containing data useful to train both types of model, 
-meaning all the datasets as zipped .zarr files (static input, dynamic 
-MeteoGalicia input, dynamic ERA5Land input, dynamic UrbClim output) 
-and .shp files of Catalonia and Barcelona to filter out the target 
-locations
+---
 
-### Loading and saving items
-The script loads the files in the General_Data folder at the beginning.
+## 📌 Authors
 
-It then trains the chosen model sequentially, with the CatBoost library.
+- **Anceline Desertaux** – anceline.desertaux@insa-lyon.fr  
+- **Jose Manuel Broto** – jmbroto@cimne.upc.edu  
+- **Gerard Mor** – gmor@cimne.upc.edu  
 
-And along the way saves several pieces of information that are to be reused 
-when wanting to make predictions once the model is trained. They are 
-stored in the 'Forecasting_MeteoGalicia' folder or the 'Historical_ERA5Land'
-folder depending on the value of 'k_fore'. The items saved are:
-- the model itself
-- 5 .npy files ('high_min', 'high_max', 'low_min', 'low_max', 'xylatlon')
-that store information about the maximums and minimums for a future 
-normalization of input data and de-normalization of output data, along with
-the spatial information of the input dataset for the reference to the 
-weather stations
+---
 
-### Models trained so far (Research paper Anceline Desertaux)
-Note that grid search doesn't work as wanted with sequential training,
-the best-fitting values for some of the model's hyperparameters have 
-thus to be determined with a manual tuning, a method is presented in 
-Anceline's paper. Historical and forecasting weather downscaling 
-models with the right hyperparameters have already been determined and 
-are stored in Next Cloud. The parameters that have been used are the 
-following:
-- N_hours = int(8 * 8760)
-- n_steps = 20 * 8 for ERA5Land data or 8 * 8 for MeteoGalicia data
-- n_harmonics = 4
-- iterations = 100
+## 📁 Scripts Overview
 
-And for each model, the hyperparameters showing the best performance were:
-- Forecasting (MeteoGalicia) : learn_rate = 0.04, depth = 6, min_weight = 8
-- Historial (ERA5Land) : learn_rate = 0.08, depth = 8, min_weight = 6
+### `catboost_model_training.py`
 
-They are named 'cat_8yrs_04_6_8_timespace.cbm' and 
-'cat_hist_8yrs_08_8_6_timespace.cbm'. For models named otherwise, the 
-value of the parameters are bound to change.
+This script is used to train a CatBoost-based weather downscaling model. It supports both forecasting (MeteoGalicia) and historical (ERA5-Land) models.
 
-## historical_prediction.py
-Script predicting high-resolution weather data on Barcelona from historical 
-data from ERA5Land, using a trained weather downscaling model (catboost_model_training.py).
-Its parameters are:
-- lat_range: set to [41.25, 41.6], the latitude range used for extracting 
-the input data
-- lon_range: set to [1.9, 2.35], the longitude range used for the same thing
-- ym_range: set to [YYYYMM, YYYYMM], with the starting and ending month 
-(included) of the prediction
-- n_harm: Nb of harmonics used for the Fourier series of the hour and month
-input data, MUST MATCH WITH THE VALUE USED FOR TRAINING THE MODEL
-- model_name and model_extension: name of the model used for the prediction
+#### Parameters
 
-Other parameters include the NextCloud directory. Same as before, the 
-user should set it up so that it corresponds to their Next Cloud directory.
+The main configurable parameters (located at the top of the script) include:
+
+- `k_fore`: Set to `1` for MeteoGalicia (forecasting), `0` for ERA5-Land (historical).
+- `model_name` & `model_extension`: Typically using `.cbm`; choose a clear and descriptive name.
+- `N_hours`: Number of hours of data to use (e.g., `8 * 8760`).
+- `n_steps`: Number of training chunks (`20 * 8` for ERA5-Land, `8 * 8` for MeteoGalicia).
+- `n_harmonics`: Number of harmonics used in the Fourier transformation (typically `4`).
+- Model hyperparameters: `iterations`, `learn_rate`, `depth`, `min_weight`.
+- File directories: Especially `nextcloud_root_dir`, which should point to your local path to the NextCloud root folder.
+
+#### Directory Structure (NextCloud)
+
+The expected root path is: ClimateReady-BCN/WP3-VulnerabilityMap/Weather Downscaling/Models_and_predictions
+Subfolders include:
+
+- `Forecasting_MeteoGalicia`: Contains model artifacts and a `Predictions` subfolder.
+- `Historical_ERA5Land`: Same structure for ERA5-Land models.
+- `General_Data`: Holds all input datasets (.zarr), shapefiles, and static features needed for model training.
+
+#### Saving Outputs
+
+During training, the script saves:
+
+- The trained model.
+- Five `.npy` files (`high_min`, `high_max`, `low_min`, `low_max`, `xylatlon`) for normalization/de-normalization and geospatial reference.
+
+#### Pretrained Models
+
+Manually tuned hyperparameters have proven more reliable than grid search with sequential training. Parameters used in successful models:
+
+- `N_hours = 8 * 8760`
+- `n_steps = 25 * 8` (ERA5-Land) or `8 * 8` (MeteoGalicia)
+- `n_harmonics = 4`
+- `iterations = 100`
+
+Hyperparameters for best models:
+
+| Model Type     | `learn_rate` | `depth` | `min_weight` |
+|----------------|--------------|---------|---------------|
+| MeteoGalicia   | 0.04         | 6       | 8             |
+| ERA5-Land      | 0.08         | 8       | 6             |
+
+Model filenames:
+- `cat_0_41.2,41.6_1.9,2.4_26280_200_4_400_0.03_6_4.cbm`
+- `cat_1_41.2,41.6_1.9,2.4_26280_64_3_400_0.03_6_4.cbm`
+
+For other model names, parameter values may differ.
+
+---
+
+### `historical_prediction.py`
+
+This script generates high-resolution weather predictions from ERA5-Land historical data. It automatically obtains the needed low-resolution data from ERA5.
+
+#### Key Parameters
+
+- `model_name`: Use one of the models trained using `catboost_model_training.py`.
+- `ym_range`: Year-month range, e.g., `[202201, 202212]`
+
+---
+
+### `real_time_prediction.py`
+
+This script performs real-time weather downscaling based on MeteoGalicia forecast data. It automatically obtains the needed low-resolution data from MeteoGalicia Threeds server.
+
+#### Key Parameters
+
+- `model_name`: Use one of the models trained using `catboost_model_training.py`.
+- `nd`: Number of previous days to include in the forecast.  
+  For example:
+  - `nd = 0` → forecasts from today (96 hours)
+  - `nd = 1` → forecasts from today (96 hours) and yesterday’s forecast.
+  - `nd = 2` → forecasts from today (96 hours) and forecasts made from the day before yesterday, and so on.
+
+---
+
+### `utils.py`
+
+This script contains common utility functions used across the other scripts. No configuration required.
+
+---
+
+## 📝 Notes
+
+- These scripts assume access to the weather datasets in NextCloud.
+- Please adjust the `nextcloud_root_dir` to match your local path.
+
+---
+
+## 📊 Datasets Used
+
+### Low-resolution weather historical data
+
+The historical model’s dynamic input comes from the **ERA5-Land** dataset. This global hourly weather dataset spans from 1950 to the present and incorporates atmospheric forcing for enhanced accuracy. Its spatial resolution is ~0.1°, equivalent to ~9 km.
+
+For our study, we focus on Catalonia, extracting data in the range:
+- Latitudes: `41.2` to `41.6`
+- Longitudes: `1.9` to `2.4`
+
+This range is further refined during harmonization.  
+Figure 1 shows the extracted points used in the historical (ERA5-Land) and target (UrbClim) datasets:
+
+![Figure 1](figures/temperature_map_2016-08-20T14:00:00_0.png)  
+**Figure 1.** Extraction points for ERA5-Land and UrbClim data.
+
+The raw ERA5-Land variables are preprocessed into usable model inputs, as summarized below:
+
+**Table 1. Processed ERA5-Land Variables**
+
+| Raw Variable | Raw Name | Unit | Formatting | Formatted Variable | New Name | New Unit |
+|--------------|----------|------|------------|---------------------|----------|----------|
+| Air Temperature at 2m | t2m | K | °C conversion | Air Temperature at 2m | airTemperature | °C |
+| Dew Point Temperature at 2m | d2m | K |  | Relative Humidity | relativeHumidity | % |
+| U wind at 10m | u10 | m/s |  | Wind Speed | windSpeed | m/s |
+| V wind at 10m | v10 | m/s |  | Wind Direction | windDirection | ° |
+| Total Precipitation | tp | m | Daily → hourly, m → mm | Total Precipitation | totalPrecipitation | mm |
+| Solar Radiation Down | ssrd | J/m² | Daily → hourly, → W/m² | GHI | GHI | W/m² |
+| Leaf Area Index (low veg) | lai_lv | m²/m² | — | Low Veg Ratio | lowVegetationRatio | m²/m² |
+| Leaf Area Index (high veg) | lai_hv | m²/m² | — | High Veg Ratio | highVegetationRatio | m²/m² |
+| Forecast Albedo | fal | — | — | Albedo | albedo | — |
+| Soil Temp (level 4) | stl4 | K | °C conversion | Soil Temperature | soilTemperature | °C |
+| Soil Water Content (level 4) | swvl4 | m³/m³ | — | Soil Water Ratio | soilWaterRatio | m³/m³ |
+| — | — | — | Calculated with pvlib | DHI, DNI, Sun Azimuth, Sun Elevation | — | — |
+
+---
+
+### Low-resolution weather forecasting data
+
+The forecasting model’s input comes from **MeteoGalicia** via the **WRF (Weather Research & Forecasting)** model. It provides daily 96-hour forecasts at ~12 km resolution.
+
+The same spatial extent as ERA5-Land is used.  
+Figure 2 shows the data extraction points for MeteoGalicia:
+
+![Figure 2](figures/temperature_map_2016-08-20T14:00:00_1.png)  
+**Figure 2.** Extraction points for MeteoGalicia and UrbClim data.
+
+**Table 2. Processed MeteoGalicia Variables**
+
+| Raw Variable | Raw Name | Unit | Formatting | Formatted Variable | New Name | New Unit |
+|--------------|----------|------|------------|---------------------|----------|----------|
+| Temp at 2m | temp | K | °C conversion | Air Temperature | airTemperature | °C |
+| RH at 2m | rh | % | — | Relative Humidity | relativeHumidity | % |
+| U Wind at 10m | u | m/s | — | Wind Speed | windSpeed | m/s |
+| V Wind at 10m | v | m/s | — | Wind Direction | windDirection | ° |
+| Accumulated Rain | prec | kg/m² | Already hourly, treated as mm | Total Precipitation | totalPrecipitation | mm |
+| Shortwave Flux | swflx | W/m² | — | GHI | GHI | W/m² |
+| — | — | — | pvlib-derived | DHI, DNI, Sun Azimuth, Sun Elevation | — | — |
+
+This repository primarily focuses on this **forecasting model**.
+
+---
+
+### Static data
+
+To enhance spatial resolution, static features are used as inputs. These are computed over a 100m grid aligned with UrbClim’s output resolution.
+
+**Table 3. Processed Static Variables**
+
+| Raw Variable | Unit | Processing | Formatted Variable | New Unit |
+|--------------|------|------------|---------------------|----------|
+| Elevation | m | Averaged over grid | Elevation Quantile | % |
+| Built Area | m² | By typology (residential, office...) | Built Area Quantile | % |
+| NDVI | — | Min, avg, max | NDVI Quantile | % |
+
+Figure 3 illustrates some of these spatially distributed variables:
+
+| ![](figures/residential.png) | ![](figures/commercial.png) |
+|-----------------------------|------------------------------|
+| (a) Residential             | (b) Commercial               |
+| ![](figures/leisure_and_hospitality.png) | ![](figures/industrial.png) |
+| (c) Leisure & Hospitality   | (d) Industrial               |
+| ![](figures/n_dwellings.png) | ![](figures/offices.png)    |
+| (e) Dwellings               | (f) Offices                  |
+| ![](figures/sports.png)     | ![](figures/ndvi_mean.png)  |
+| (g) Sports Areas            | (h) NDVI Mean                |
+| ![](figures/elevation.png)  | ![](figures/ndvi_min.png)   |
+| (i) Elevation               | (j) NDVI Min                 |
+
+**Figure 3.** Examples of spatial distribution for static inputs.
+
+---
+
+### High-resolution weather data (target)
+
+The output for training is derived from the **UrbClim** model. Covering Barcelona at 100m resolution, it provides hourly data from 2008–2017.
+
+UrbClim data is not publicly available but was kindly shared by the authors for research purposes. The aim is to approximate UrbClim predictions using the trained downscaling models.
+
+**Table 4. Processed UrbClim Variables**
+
+| Raw Variable | Raw Name | Unit | Formatting | Formatted Variable | New Name | New Unit |
+|--------------|----------|------|------------|---------------------|----------|----------|
+| Temp at 2m | T2M | K | °C conversion | Air Temperature | airTemperature | °C |
+| Specific Humidity | QV2M | — | — | Relative Humidity | relativeHumidity | % |
+
+---
+
+## 📜 License
+
+© 2024 Anceline Desertaux, Jose Manuel Broto, Gerard Mor  
+This project is shared for research and academic purposes. For dataset access or further usage, please contact the authors.
+
+---
 
 
-## real_time_prediction.py
-Script predicting high-resolution weather data on Barcelona from forecasting 
-data from MeteoGalicia, using a trained weather downscaling model (catboost_model_training.py).
-Its parameters are:
-- lat_range: set to [41.25, 41.6], the latitude range used for extracting 
-the input data
-- lon_range: set to [1.9, 2.35], the longitude range used for the same thing
-- nd: Nb of days preceding today where data should be predicted.
-If equal to 1, only the forecasting data from today will be loaded and downscaled
-Forecasting at one day means having the forecasting data for 96 hours from 
-today midnight, so for 4 days. If set to 2, it will also do the same thing 
-for the forecasting that was made yesterday, meaning forecasting data for 
-96h starting yesterday midnight. This way, data overlaps for 3 days, but without 
-being equal, as the forecasting made yesterday is different from the 
-forecasting made today. And this goes on as 'nd' is increased.
-- n_harm: Nb of harmonics used for the Fourier series of the hour and month
-input data, MUST MATCH WITH THE VALUE USED FOR TRAINING THE MODEL
-- model_name and model_extension: name of the model used for the prediction
-
-Other parameters include the NextCloud directory. Same as before, the 
-user should set it up so that it corresponds to their Next Cloud directory.
-
-## utils.py
-This file simply stores all the python functions used in the other scripts.
-
-Copyright (c) 2024 Anceline, Arnau Comas, Jose Manuel Broto, Gerard Mor
+Thank you for using **CR_BCN_meteo**!  
+For any questions or suggestions, feel free to reach out to the authors listed above.
