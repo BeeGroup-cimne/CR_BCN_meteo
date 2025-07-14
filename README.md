@@ -1,4 +1,4 @@
-# CR_BCN_meteo
+# Climate Ready Barcelona: Weather downscaling model
 
 Welcome to the **CR_BCN_meteo** repository.
 
